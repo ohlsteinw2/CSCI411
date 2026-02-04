@@ -1,0 +1,20 @@
+help
+ls
+cd
+ls
+ls -al
+echo Cool
+myprocess
+allprocesses
+dir
+dir .
+dir ..
+pwd
+clr
+environ
+repeat Hello World
+echo Hello World > test.txt
+cat test.txt
+hiMom
+whoami
+quit
