@@ -18,3 +18,7 @@ cat test.txt
 hiMom
 whoami
 quit
+help
+echo Your mom
+exit
+quit
