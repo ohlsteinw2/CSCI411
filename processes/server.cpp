@@ -7,9 +7,7 @@
  * calculates new central temperature,
  * and sends it back until everything stabilizes.
  *
- * Compile:
- *   g++ -std=c++17 server.cpp -o server -lrt
- */
+
 
 #include <iostream>
 #include <string>
@@ -182,4 +180,5 @@ int main() {
 
     return 0;
 }
+
 
