@@ -1,112 +1,157 @@
 /*
- * Adapted from  Softpryaog 
-  *    https://www.softprayog.in/programming/interprocess-communication-using-posix-message-queues-in-linux
-  * by MA Doman 2018
- * client.c: Client program
- *           to demonstrate interprocess communication
- *           with POSIX message queues
+ * client.cpp
+ * CSCI 411 - Cooperating Processes Lab
+ *
+ * This client represents one of the 4 external temperature processes.
+ * It sends its temperature to the server and keeps updating until
+ * the server says the system is stable.
+ *
+ * Compile:
+ *   g++ -std=c++17 client.cpp -o client -lrt
+ *
+ * Run (in separate terminals):
+ *   ./client 0
+ *   ./client 1
+ *   ./client 2
+ *   ./client 3
  */
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <iostream>
 #include <string>
-#include <sys/types.h>
+#include <cstring>
+#include <cstdlib>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <mqueue.h>
-#include <cstring>
-#include <iostream>
-
-// DEFINE THE SERVER NAME AN DEFAULT VALUES FOR THE MESSAGE QUEUE
-#define SERVER_QUEUE_NAME   "/server"
-#define QUEUE_PERMISSIONS 0660  // like chmod values, user and owner can read and write to queue
-#define MAX_MESSAGES 10
-#define MAX_MSG_SIZE 256
-#define MSG_BUFFER_SIZE MAX_MSG_SIZE + 10   // leave some extra space after message
 
 using namespace std;
 
-/****************************************************************************
-START OF MAIN PROCEDURE
-This server creates a message queue and waits for a message requesting a token
-The message received also has the name of the client mailbox.  The server uses
-that name to reply.
-*****************************************************************************/
-int main ()
-{
-    mqd_t qd_server, qd_client;   // queue descriptors
-    int token_number;
+// Names must start with / for POSIX message queues
+static const char* SERVER_QUEUE_NAME = "/ohlsteinw_server";
+static const char* CLIENT_QUEUE_PREFIX = "/ohlsteinw_client";
 
-    // create the client queue for receiving messages from server
-	// use the client PID to help differentiate it from other queues with similar names
-	// the queue name must be a null-terminated c-string.
-	// strcpy makes that happen
-    char client_queue_name [64];
-//	string  str_client_queue_name = "/client-" + to_string(getpid ()) + "\\0'";
-	string  str_client_queue_name = "/client-" + to_string(getpid ());
-	strcpy(client_queue_name, str_client_queue_name.c_str());
-    
-	// Build message queue attribute structure passed to the mq open
-    struct mq_attr attr;
+#define QUEUE_PERMISSIONS 0660
+#define MAX_MESSAGES 10
 
-		attr.mq_flags = 0;
-		attr.mq_maxmsg = MAX_MESSAGES;
-		attr.mq_msgsize = MAX_MSG_SIZE;
-		attr.mq_curmsgs = 0;
+// Different types of messages we send
+enum MsgType { INIT = 1, UPDATE = 2, TERMINATE = 3 };
 
-	char in_buffer [MSG_BUFFER_SIZE];   // Build input buffer
-	char temp_buf [10];	                // to hold result of input
-	
-	// Create and open client message queue
-    if ((qd_client = mq_open (client_queue_name, O_RDONLY | O_CREAT, QUEUE_PERMISSIONS, &attr)) == -1) {
-        cerr<<"Client: mq_open (client)" ;
-        exit (1);
+// This is the structure both server and client agree on
+// We send this back and forth through the message queue
+struct Packet {
+    int type;       // what kind of message
+    int clientId;   // which client is sending
+    long temp;      // temperature (stored as milli-degrees)
+};
+
+static void die(const char* msg) {
+    perror(msg);
+    exit(1);
+}
+
+// Helper to build client queue name like /ohlsteinw_client0
+static string clientQueueName(int clientId) {
+    return string(CLIENT_QUEUE_PREFIX) + to_string(clientId);
+}
+
+// Just prints temperature nicely (converts from milli-deg)
+static void printTemp(long milli) {
+    long whole = milli / 1000;
+    long frac  = labs(milli % 1000);
+    cout << whole << "." << (frac < 100 ? (frac < 10 ? "00" : "0") : "") << frac;
+}
+
+int main(int argc, char* argv[]) {
+
+    if (argc != 2) {
+        cerr << "Usage: ./client <id 0..3>\n";
+        return 1;
     }
-	
-	// Open server message queue. The name is shared. It is opend write and read only
-    if ((qd_server = mq_open (SERVER_QUEUE_NAME, O_WRONLY)) == -1) {
-         cerr<<"Client: mq_open (server)";
-        exit (1);
+
+    int clientId = atoi(argv[1]);
+    if (clientId < 0 || clientId > 3) {
+        cerr << "Client id must be 0,1,2,3\n";
+        return 1;
     }
 
+    // Initial temperatures given in the assignment
+    // Stored as milli-degrees to avoid floating point issues
+    const long initialTemps[4] = {100000, 22000, 50000, 40000};
+    long myTemp = initialTemps[clientId];
 
-// Loop while the enter key is pressed after the prompt to:
-    printf ("Ask for a token (Press <ENTER>): ");
-    while (fgets (temp_buf, 2, stdin)) {
+    pid_t pid = getpid();
+    string myQueue = clientQueueName(clientId);
 
-        // Send message to server
-		//  Data sent is the client's message queue name
-        if (mq_send (qd_server, client_queue_name , strlen(client_queue_name), 0) == -1) {
-             cerr<<"Client: Not able to send message to server";
-            continue;
+    // Remove old queue in case program crashed before
+    mq_unlink(myQueue.c_str());
+
+    // Setup queue attributes
+    mq_attr attr{};
+    attr.mq_flags = 0;
+    attr.mq_maxmsg = MAX_MESSAGES;
+    attr.mq_msgsize = sizeof(Packet);
+    attr.mq_curmsgs = 0;
+
+    // Create client queue (this is where server sends replies)
+    mqd_t qd_client = mq_open(myQueue.c_str(), O_RDONLY | O_CREAT, QUEUE_PERMISSIONS, &attr);
+    if (qd_client == (mqd_t)-1) die("Client mq_open");
+
+    // Open server queue so we can send to it
+    mqd_t qd_server = mq_open(SERVER_QUEUE_NAME, O_WRONLY);
+    if (qd_server == (mqd_t)-1) {
+        cerr << "Start server first.\n";
+        return 1;
+    }
+
+    // Send initial temperature to server
+    Packet initMsg{};
+    initMsg.type = INIT;
+    initMsg.clientId = clientId;
+    initMsg.temp = myTemp;
+
+    cout << pid << ": sending INIT temp=";
+    printTemp(myTemp);
+    cout << endl;
+
+    mq_send(qd_server, reinterpret_cast<const char*>(&initMsg), sizeof(initMsg), 0);
+
+    // Main loop: wait for central temp from server
+    while (true) {
+
+        Packet incoming{};
+        mq_receive(qd_client, reinterpret_cast<char*>(&incoming), sizeof(incoming), nullptr);
+
+        if (incoming.type == TERMINATE) {
+            cout << pid << ": system stable, final temp=";
+            printTemp(incoming.temp);
+            cout << endl;
+            break;
         }
 
-        // Receive response from server
-		// Message received is the token
-        if (mq_receive (qd_client, in_buffer, MSG_BUFFER_SIZE, NULL) == -1) {
-             cerr<<"Client: mq_receive";
-            exit (1);
-        }
-        // display token received from server
-        token_number = atoi(in_buffer);
-        cout << "Client: Token received from server: " <<  token_number << endl;
+        // Compute new external temperature
+        // Formula from assignment:
+        // new external = (3*myTemp + 2*central) / 5
+        long centralTemp = incoming.temp;
+        myTemp = (3 * myTemp + 2 * centralTemp) / 5;
 
-        cout << endl << "Ask for a token (Press ): "<< endl;
+        cout << pid << ": received central=";
+        printTemp(centralTemp);
+        cout << " sending updated temp=";
+        printTemp(myTemp);
+        cout << endl;
+
+        Packet updateMsg{};
+        updateMsg.type = UPDATE;
+        updateMsg.clientId = clientId;
+        updateMsg.temp = myTemp;
+
+        mq_send(qd_server, reinterpret_cast<const char*>(&updateMsg), sizeof(updateMsg), 0);
     }
 
-   
-	// Close this message queue
-    if (mq_close (qd_client) == -1) {
-        cerr<<"Client: mq_close";
-        exit (1);
-    }
+    // Clean up queue
+    mq_close(qd_client);
+    mq_unlink(myQueue.c_str());
 
-	// Unlink this message queue
-    if (mq_unlink (client_queue_name ) == -1) {
-         cerr<<"Client: mq_unlink";
-        exit (1);
-    }
-    cout << "Client: bye\n";
-
-    exit (0);
+    return 0;
+}
