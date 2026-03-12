@@ -6,15 +6,6 @@
  * It sends its temperature to the server and keeps updating until
  * the server says the system is stable.
  *
- * Compile:
- *   g++ -std=c++17 client.cpp -o client -lrt
- *
- * Run (in separate terminals):
- *   ./client 0
- *   ./client 1
- *   ./client 2
- *   ./client 3
- */
 
 #include <iostream>
 #include <string>
@@ -155,3 +146,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
